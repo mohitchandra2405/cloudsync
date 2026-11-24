@@ -1,10 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { HocuspocusProvider } from '@hocuspocus/provider'
 import { useEditor, EditorContent } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
-import Collaboration from '@tiptap/extension-collaboration'
-import CollaborationCaret from '@tiptap/extension-collaboration-caret'
 import Underline from '@tiptap/extension-underline'
 import TextAlign from '@tiptap/extension-text-align'
 import Color from '@tiptap/extension-color'
@@ -17,7 +14,8 @@ import TableRow from '@tiptap/extension-table-row'
 import TableCell from '@tiptap/extension-table-cell'
 import TableHeader from '@tiptap/extension-table-header'
 import { Cloud, ArrowLeft, Bold, Check, ChevronDown, CircleAlert, Clock3, Code2, Download, FileDown, FilePlus2, Heading1, Heading2, Highlighter, ImagePlus, Italic, Link2, List, ListOrdered, LoaderCircle, MoreHorizontal, Quote, Redo2, Share2, Strikethrough, Table2, Underline as UnderlineIcon, Undo2, UsersRound, AlignCenter, AlignLeft, AlignRight, Eye, Save, Palette, RotateCcw, X } from 'lucide-react'
-import { auth } from '../services/firebase.js'
+import { db } from '../services/firebase.js'
+import { doc, onSnapshot, serverTimestamp, setDoc } from 'firebase/firestore'
 import { useAuth } from '../context/AuthContext.jsx'
 import { getDocument, listVersions, addVersion, renameDocument, updateDocumentMetadata } from '../services/documentService.js'
 import { uploadDocumentImage } from '../services/storageService.js'
@@ -25,17 +23,16 @@ import { LoadingScreen } from '../components/common/Feedback.jsx'
 import ShareDialog from '../components/sharing/ShareDialog.jsx'
 import { flattenDocumentText, sanitizeFileName } from '../utils/documentText.js'
 
-const COLORS = ['#25304a', '#5268e8', '#15a68a', '#df8d38', '#d85672', '#9059c9']
-const collabUrl = import.meta.env.VITE_COLLAB_URL || 'ws://localhost:4000'
-const randomColor = () => COLORS[Math.floor(Math.random() * COLORS.length)]
-
 export default function DocumentEditor() {
   const { documentId } = useParams(); const { user, profile } = useAuth(); const navigate = useNavigate()
   const [docData, setDocData] = useState(null); const [loading, setLoading] = useState(true); const [loadError, setLoadError] = useState('')
-  const [provider, setProvider] = useState(null); const [connection, setConnection] = useState('connecting'); const [saveStatus, setSaveStatus] = useState('saved')
+  const [connection, setConnection] = useState('connecting'); const [saveStatus, setSaveStatus] = useState('saved')
+  const [initialContent, setInitialContent] = useState(null); const [contentReady, setContentReady] = useState(false)
   const [title, setTitle] = useState(''); const [editingTitle, setEditingTitle] = useState(false); const titleInput = useRef(null)
   const [shareOpen, setShareOpen] = useState(false); const [versionsOpen, setVersionsOpen] = useState(false); const [versions, setVersions] = useState([]); const [versionsLoading, setVersionsLoading] = useState(false)
-  const [collaborators, setCollaborators] = useState([]); const [message, setMessage] = useState(''); const [issue, setIssue] = useState(''); const imageInput = useRef(null); const saveTimer = useRef(null); const versionTimer = useRef(null)
+  const [message, setMessage] = useState(''); const [issue, setIssue] = useState(''); const imageInput = useRef(null); const saveTimer = useRef(null); const versionTimer = useRef(null)
+  const editorRef = useRef(null); const dirtyRef = useRef(false); const editRevision = useRef(0); const lastSavedContent = useRef('')
+  const [clientId] = useState(() => globalThis.crypto?.randomUUID?.() || `${user.uid}-${Date.now()}-${Math.random().toString(36).slice(2)}`)
   const editable = docData?.role === 'owner' || docData?.role === 'editor'
 
   useEffect(() => {
@@ -50,46 +47,101 @@ export default function DocumentEditor() {
 
   useEffect(() => {
     if (!docData) return undefined
-    let alive = true
-    const nextProvider = new HocuspocusProvider({
-      url: collabUrl, name: documentId, token: () => auth.currentUser.getIdToken(),
-      onStatus: ({ status }) => alive && setConnection(status),
-      onSynced: ({ state }) => alive && state && setConnection('connected'),
-      onAwarenessUpdate: ({ states }) => alive && setCollaborators(states.map((state) => state.user).filter((person) => person?.id !== user.uid)),
+    let active = true
+    let receivedInitialSnapshot = false
+    const contentReference = doc(db, 'documents', documentId, 'content', 'main')
+    const unsubscribe = onSnapshot(contentReference, { includeMetadataChanges: true }, (snapshot) => {
+      if (!active) return
+      const content = snapshot.exists() ? snapshot.data().content : null
+      const serialized = content ? JSON.stringify(content) : ''
+      setConnection(snapshot.metadata.fromCache ? 'connecting' : 'connected')
+      if (!receivedInitialSnapshot) {
+        receivedInitialSnapshot = true
+        setInitialContent(content)
+        setContentReady(true)
+        lastSavedContent.current = serialized
+        return
+      }
+      if (snapshot.metadata.hasPendingWrites || !content || serialized === lastSavedContent.current) return
+      if (snapshot.data().clientId === clientId) { lastSavedContent.current = serialized; return }
+      const currentEditor = editorRef.current
+      if (!currentEditor) {
+        setInitialContent(content)
+        lastSavedContent.current = serialized
+        return
+      }
+      const currentContent = JSON.stringify(currentEditor.getJSON())
+      if (dirtyRef.current && currentContent !== serialized) {
+        setIssue('This document changed in another session while you had unsaved edits. Save a version before refreshing.')
+        return
+      }
+      if (currentContent !== serialized) currentEditor.commands.setContent(content, false)
+      lastSavedContent.current = serialized
+      dirtyRef.current = false
+    }, (error) => {
+      if (!active) return
+      setConnection('disconnected')
+      setContentReady(true)
+      setIssue('Cloud sync unavailable: ' + error.message)
     })
-    setProvider(nextProvider)
-    return () => { alive = false; nextProvider.destroy(); setProvider(null) }
-  }, [docData, documentId, user.uid])
+    return () => { active = false; unsubscribe() }
+  }, [docData, documentId])
 
-  const userColor = useMemo(randomColor, [user.uid])
   const editor = useEditor({
-    extensions: provider ? [
-      StarterKit.configure({ undoRedo: false }), Underline,
+    extensions: [
+      StarterKit.configure({ link: false, underline: false }), Underline,
       TextAlign.configure({ types: ['heading', 'paragraph'] }), TextStyle, Color,
       Highlight.configure({ multicolor: true }),
       LinkExtension.configure({ openOnClick: false, autolink: true, HTMLAttributes: { rel: 'noopener noreferrer', target: '_blank' } }),
       Image.configure({ allowBase64: false, inline: false }),
       Table.configure({ resizable: true }), TableRow, TableHeader, TableCell,
-      Collaboration.configure({ document: provider.document }),
-      CollaborationCaret.configure({ provider, user: { id: user.uid, name: profile?.name || user.email, color: userColor } }),
-    ] : [StarterKit],
-    editable: Boolean(provider && editable),
+    ],
+    content: initialContent || undefined,
+    editable: Boolean(contentReady && editable),
     immediatelyRender: false,
     onUpdate: () => {
-      if (!editable) return
+      if (!editable || !contentReady) return
+      dirtyRef.current = true
+      const revision = ++editRevision.current
       setSaveStatus('saving')
       clearTimeout(saveTimer.current)
       saveTimer.current = setTimeout(async () => {
-        try { await updateDocumentMetadata(documentId, { updatedBy: user.uid }); setSaveStatus('saved') }
-        catch (error) { setSaveStatus('error'); setIssue(`Cloud save failed: ${error.message}`) }
-      }, 850)
+        const currentEditor = editorRef.current
+        if (!currentEditor) return
+        const content = currentEditor.getJSON()
+        const serialized = JSON.stringify(content)
+        try {
+          await Promise.all([
+            setDoc(doc(db, 'documents', documentId, 'content', 'main'), {
+              content, updatedAt: serverTimestamp(), updatedBy: user.uid, clientId,
+            }),
+            updateDocumentMetadata(documentId, { updatedBy: user.uid }),
+          ])
+          lastSavedContent.current = serialized
+          if (editRevision.current === revision) {
+            dirtyRef.current = false
+            setSaveStatus('saved')
+            setIssue('')
+          }
+        } catch (error) {
+          setSaveStatus('error')
+          setIssue('Cloud save failed: ' + error.message)
+        }
+      }, 700)
       clearTimeout(versionTimer.current)
       versionTimer.current = setTimeout(async () => {
-        try { if (editor && editor.getText().trim()) await addVersion(documentId, editor.getJSON(), user) }
+        try { if (editorRef.current?.getText().trim()) await addVersion(documentId, editorRef.current.getJSON(), user) }
         catch (error) { console.warn('Automatic version snapshot failed', error) }
       }, 120_000)
     },
-  }, [provider, editable, documentId, user.uid, profile?.name, user.email, userColor])
+  }, [contentReady, initialContent, editable, documentId, user.uid, user.email])
+  if (editor) editorRef.current = editor
+
+  useEffect(() => {
+    if (!editor || !contentReady || !initialContent) return
+    const currentContent = JSON.stringify(editor.getJSON())
+    if (currentContent !== JSON.stringify(initialContent)) editor.commands.setContent(initialContent, false)
+  }, [editor, contentReady, initialContent])
 
   useEffect(() => () => { clearTimeout(saveTimer.current); clearTimeout(versionTimer.current) }, [])
   useEffect(() => { if (editingTitle) titleInput.current?.focus() }, [editingTitle])
@@ -165,7 +217,7 @@ export default function DocumentEditor() {
   const statusLabel = connection === 'connected' ? saveStatus === 'saving' ? 'Saving changes…' : saveStatus === 'error' ? 'Save failed' : 'All changes saved' : connection === 'disconnected' ? 'Reconnecting…' : 'Connecting…'
 
   return <main className="editor-page">
-    <header className="editor-topbar"><Link to="/" className="back-workspace" title="Back to workspace"><ArrowLeft size={18} /></Link><span className="editor-brand-mark"><CloudIcon /></span><div className="editor-title-wrap">{editingTitle && editable ? <input ref={titleInput} value={title} onChange={(event) => setTitle(event.target.value)} onBlur={saveTitle} onKeyDown={(event) => event.key === 'Enter' && saveTitle()} aria-label="Document title" /> : <button className="document-title-button" onClick={() => editable && setEditingTitle(true)} title={editable ? 'Rename document' : title}>{title}</button>}<span className={`save-indicator save-${saveStatus}`}><i />{statusLabel}</span></div><div className="editor-top-actions"><div className="collaborator-stack">{collaborators.slice(0, 4).map((person, index) => <span key={`${person.id}-${index}`} className="avatar collaborator-avatar" style={{ background: person.color || '#6575df' }} title={person.name}>{(person.name || 'U')[0].toUpperCase()}</span>)}{collaborators.length > 4 && <span className="avatar avatar-overflow">+{collaborators.length - 4}</span>}</div>{collaborators.length > 0 && <span className="live-count"><span />{collaborators.length} online</span>}{docData.role === 'owner' && <button className="primary-button share-button" onClick={() => setShareOpen(true)}><Share2 size={15} />Share</button>}<button className="avatar avatar-header" title={profile?.name}>{(profile?.name || user.email || 'U')[0].toUpperCase()}</button></div></header>
+    <header className="editor-topbar"><Link to="/" className="back-workspace" title="Back to workspace"><ArrowLeft size={18} /></Link><span className="editor-brand-mark"><CloudIcon /></span><div className="editor-title-wrap">{editingTitle && editable ? <input ref={titleInput} value={title} onChange={(event) => setTitle(event.target.value)} onBlur={saveTitle} onKeyDown={(event) => event.key === 'Enter' && saveTitle()} aria-label="Document title" /> : <button className="document-title-button" onClick={() => editable && setEditingTitle(true)} title={editable ? 'Rename document' : title}>{title}</button>}<span className={`save-indicator save-${saveStatus}`}><i />{statusLabel}</span></div><div className="editor-top-actions">{docData.role === 'owner' && <button className="primary-button share-button" onClick={() => setShareOpen(true)}><Share2 size={15} />Share</button>}<button className="avatar avatar-header" title={profile?.name}>{(profile?.name || user.email || 'U')[0].toUpperCase()}</button></div></header>
     <div className="editor-toolbar-row"><div className="editor-toolbar">
       <button className="tool-button tool-back" onClick={() => navigate('/')} title="Back"><ArrowLeft size={17} /></button><span className="toolbar-divider" />
       <button className="tool-button" title="Undo" onClick={() => editor?.chain().focus().undo().run()}><Undo2 size={17} /></button><button className="tool-button" title="Redo" onClick={() => editor?.chain().focus().redo().run()}><Redo2 size={17} /></button><span className="toolbar-divider" />
