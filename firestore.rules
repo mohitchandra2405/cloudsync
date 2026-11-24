@@ -1,0 +1,75 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function isOwner(documentId) {
+      return signedIn() && get(/databases/$(database)/documents/documents/$(documentId)).data.ownerId == request.auth.uid;
+    }
+    function hasPermission(documentId) {
+      return signedIn() && exists(/databases/$(database)/documents/documents/$(documentId)/permissions/$(request.auth.uid));
+    }
+    function canView(documentId) {
+      return isOwner(documentId) || (hasPermission(documentId) &&
+        get(/databases/$(database)/documents/documents/$(documentId)).data.isDeleted != true);
+    }
+    function canEdit(documentId) {
+      return isOwner(documentId) || (hasPermission(documentId) &&
+        get(/databases/$(database)/documents/documents/$(documentId)/permissions/$(request.auth.uid)).data.role == 'editor' &&
+        get(/databases/$(database)/documents/documents/$(documentId)).data.isDeleted != true);
+    }
+
+    match /users/{userId} {
+      allow read, create, update, delete: if signedIn() && request.auth.uid == userId;
+    }
+
+    match /documents/{documentId} {
+      allow create: if signedIn() && request.resource.data.ownerId == request.auth.uid
+        && request.resource.data.keys().hasAll(['title', 'ownerId', 'createdAt', 'updatedAt'])
+        && request.resource.data.keys().hasOnly(['title', 'ownerId', 'ownerName', 'createdAt', 'updatedAt', 'updatedBy', 'isDeleted', 'isStarred', 'visibility'])
+        && request.resource.data.title is string
+        && request.resource.data.title.size() > 0
+        && request.resource.data.title.size() <= 200
+        && request.resource.data.createdAt is timestamp
+        && request.resource.data.updatedAt is timestamp
+        && request.resource.data.updatedBy == request.auth.uid
+        && request.resource.data.isDeleted == false
+        && request.resource.data.isStarred == false
+        && request.resource.data.visibility == 'private';
+      allow get: if canView(documentId);
+      allow list: if signedIn() && resource.data.ownerId == request.auth.uid;
+      allow update: if canEdit(documentId)
+        && request.resource.data.ownerId == resource.data.ownerId
+        && request.resource.data.createdAt == resource.data.createdAt
+        && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['isDeleted', 'isStarred', 'visibility']) || isOwner(documentId))
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['title', 'updatedAt', 'updatedBy', 'isDeleted', 'isStarred', 'visibility'])
+        && request.resource.data.title is string
+        && request.resource.data.title.size() > 0
+        && request.resource.data.title.size() <= 200
+        && request.resource.data.updatedAt is timestamp
+        && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['updatedBy']) || request.resource.data.updatedBy == request.auth.uid)
+        && request.resource.data.isDeleted is bool
+        && request.resource.data.isStarred is bool
+        && request.resource.data.visibility in ['private', 'shared'];
+      allow delete: if isOwner(documentId);
+
+      match /permissions/{userId} {
+        allow get, list: if signedIn() && (request.auth.uid == userId || isOwner(documentId));
+        allow create, update, delete: if isOwner(documentId);
+      }
+
+      match /versions/{versionId} {
+        allow read: if canView(documentId);
+        allow create: if canEdit(documentId)
+          && request.resource.data.createdBy == request.auth.uid
+          && request.resource.data.keys().hasAll(['content', 'createdBy', 'createdAt']);
+        allow update, delete: if isOwner(documentId);
+      }
+
+      match /activity/{activityId} {
+        allow read: if canView(documentId);
+        allow create: if canEdit(documentId) && request.resource.data.userId == request.auth.uid;
+        allow update, delete: if isOwner(documentId);
+      }
+    }
+  }
+}

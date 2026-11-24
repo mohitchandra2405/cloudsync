@@ -1,0 +1,22 @@
+{
+  "name": "cloudsync-backend",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch src/server.js",
+    "start": "node src/server.js"
+  },
+  "dependencies": {
+    "@hocuspocus/extension-sqlite": "^4.0.0",
+    "@hocuspocus/server": "^4.0.0",
+    "better-sqlite3": "^12.2.0",
+    "cloudsync": "file:..",
+    "cors": "^2.8.5",
+    "dotenv": "^16.5.0",
+    "express": "^5.1.0",
+    "express-rate-limit": "^8.1.0",
+    "firebase-admin": "^14.5.0",
+    "helmet": "^8.1.0"
+  }
+}

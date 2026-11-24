@@ -1,0 +1,29 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    function signedIn() { return request.auth != null; }
+    function documentPath(documentId) { return /databases/(default)/documents/documents/$(documentId); }
+    function permissionPath(documentId, userId) { return /databases/(default)/documents/documents/$(documentId)/permissions/$(userId); }
+    function canView(documentId) {
+      return signedIn() && (
+        firestore.get(documentPath(documentId)).data.ownerId == request.auth.uid ||
+        (firestore.exists(permissionPath(documentId, request.auth.uid)) &&
+          firestore.get(documentPath(documentId)).data.isDeleted != true)
+      );
+    }
+    function canEdit(documentId) {
+      return signedIn() && (
+        firestore.get(documentPath(documentId)).data.ownerId == request.auth.uid ||
+        (firestore.exists(permissionPath(documentId, request.auth.uid)) &&
+          firestore.get(permissionPath(documentId, request.auth.uid)).data.role == 'editor' &&
+          firestore.get(documentPath(documentId)).data.isDeleted != true)
+      );
+    }
+    match /documents/{documentId}/{fileName} {
+      allow read: if canView(documentId);
+      allow create, update: if canEdit(documentId) && request.resource.size <= 5 * 1024 * 1024
+        && request.resource.contentType.matches('image/(jpeg|png|gif|webp)');
+      allow delete: if canEdit(documentId);
+    }
+  }
+}

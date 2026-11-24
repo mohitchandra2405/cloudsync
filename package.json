@@ -1,0 +1,54 @@
+{
+  "name": "cloudsync",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "build": "vite build",
+    "preview": "vite preview",
+    "server": "npm --prefix backend run dev",
+    "start": "npm --prefix backend start"
+  },
+  "dependencies": {
+    "@hocuspocus/provider": "^4.0.0",
+    "@tiptap/extension-collaboration": "^3.0.0",
+    "@tiptap/extension-collaboration-caret": "^3.0.0",
+    "@tiptap/extension-color": "^3.0.0",
+    "@tiptap/extension-highlight": "^3.0.0",
+    "@tiptap/extension-image": "^3.0.0",
+    "@tiptap/extension-link": "^3.0.0",
+    "@tiptap/extension-table": "^3.0.0",
+    "@tiptap/extension-table-cell": "^3.0.0",
+    "@tiptap/extension-table-header": "^3.0.0",
+    "@tiptap/extension-table-row": "^3.0.0",
+    "@tiptap/extension-text-align": "^3.0.0",
+    "@tiptap/extension-text-style": "^3.0.0",
+    "@tiptap/extension-underline": "^3.0.0",
+    "@tiptap/react": "^3.0.0",
+    "@tiptap/starter-kit": "^3.0.0",
+    "docx": "^9.5.1",
+    "firebase": "^12.0.0",
+    "lucide-react": "^0.577.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "react-router-dom": "^7.9.5",
+    "yjs": "^13.6.27"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.1.17",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.0",
+    "@testing-library/user-event": "^14.6.1",
+    "@vitejs/plugin-react": "^5.0.4",
+    "jsdom": "^26.1.0",
+    "tailwindcss": "^4.1.17",
+    "vite": "^7.1.12",
+    "vitest": "^5.1.0"
+  },
+  "overrides": {
+    "@grpc/grpc-js": "^1.14.7"
+  }
+}
